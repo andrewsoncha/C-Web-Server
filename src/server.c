@@ -38,6 +38,7 @@
 
 #define SERVER_FILES "./serverfiles"
 #define SERVER_ROOT "./serverroot"
+#define TIME_DIFF 60
 
 /**
  * Send an HTTP response
@@ -52,12 +53,39 @@ int send_response(int fd, char *header, char *content_type, void *body, int cont
 {
     const int max_response_size = 262144;
     char response[max_response_size];
-
+	int header_length = strlen(header);
+	int content_type_len = strlen(content_type);
+	if((header_length+content_type_len+content_length)>max_response_size){ //size of packet exceeds max_response_size
+		return -1;
+	}
+	time_t now = time(NULL);
+	struct tm* timeFormat = localtime(&now);
+	char *dayOfWeek[7] = {
+		"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
+	};
+	char *monthName[12] = {
+		"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+	};
+	int wday, month, day, hour, min, sec, year;
+	wday = timeFormat->tm_wday; printf("wday: %d\n",wday);
+	month = timeFormat->tm_mon; printf("month: %d\n",month);
+	day = timeFormat->tm_mday; printf("day %d ",day);
+	hour = timeFormat->tm_hour; printf("hour %d ",hour);
+	min = timeFormat->tm_min; printf("min %d ",min);
+	sec = timeFormat->tm_sec;printf("sec: %d",sec);
+	year = 1900+timeFormat->tm_year;
+	
+	
     // Build HTTP response and store it in response
-
-    ///////////////////
-    // IMPLEMENT ME! //
-    ///////////////////
+	int charCnt=0;
+	charCnt += sprintf(response, "%s\n",header);printf("header: %s\n",response);
+	charCnt += sprintf(response+charCnt, "Date: %s %s %d %d:%d:%d PST %d\n", dayOfWeek[wday], monthName[month], day, hour, min, sec, year);printf("header: %s\n",response);
+	charCnt += sprintf(response+charCnt, "Connection: close\n");printf("header: %s\n",response);
+	charCnt += sprintf(response+charCnt, "Content-Length: %d\n",content_length);printf("header: %s\n",response);
+	charCnt += sprintf(response+charCnt, "Content-Type: %s\n\n", content_type);
+	memcpy(response+charCnt, body, content_length);
+	
+	int response_length = charCnt+content_length;
 
     // Send it all!
     int rv = send(fd, response, response_length, 0);
@@ -76,16 +104,17 @@ int send_response(int fd, char *header, char *content_type, void *body, int cont
 void get_d20(int fd)
 {
     // Generate a random number between 1 and 20 inclusive
-    
-    ///////////////////
-    // IMPLEMENT ME! //
-    ///////////////////
+	srand(time(NULL));
+    int random_number = rand()%20+1;
+	char number_str[3] = {0,0,0};
+	sprintf(number_str, "%d\n",random_number);
+	puts(number_str);
 
     // Use send_response() to send it back as text/plain data
-
-    ///////////////////
-    // IMPLEMENT ME! //
-    ///////////////////
+	
+	char header[] = "HTTP/1.1 200 OK";
+	char content_type[] = "text/plain";
+	send_response(fd, header, content_type, number_str, strlen(number_str));
 }
 
 /**
@@ -119,9 +148,36 @@ void resp_404(int fd)
  */
 void get_file(int fd, struct cache *cache, char *request_path)
 {
-    ///////////////////
-    // IMPLEMENT ME! //
-    ///////////////////
+	char filePath[1020];
+	struct file_data *fileContent;
+	char* mime_type;
+	sprintf(filePath, "%s%s",SERVER_ROOT, request_path);
+	printf("filePath:  %s \n",filePath);
+	
+	struct cache_entry *entry = cache_get(cache, request_path);
+	if(entry!=NULL){
+		time_t current = time(NULL);
+		printf("created_at: %d     current: %d  difference: %d\n",entry->created_at, current, (current-entry->created_at));
+		if(current - entry->created_at < TIME_DIFF){
+			printf("file found from entry. Serving from cache\n");
+			send_response(fd, "HTTP/1.1 200 OK", entry->content_type, entry->content, entry->content_length);
+			return;
+		}
+	}
+	
+	fileContent = file_load(filePath);
+	if(fileContent==NULL){ // if the requested file doesn't exist or is not a regular file, serve 404
+		printf("FILE NOT FOUND! SERVING 404!\n"); 
+		resp_404(fd);
+	}
+	else{
+		printf("file not found from entry. serving from disk\n");
+		printf("FILE FOUND. SERVING 200\n");
+		mime_type = mime_type_get(filePath);
+		cache_put(cache, request_path, mime_type, fileContent->data, fileContent->size);
+		send_response(fd, "HTTP/1.1 200 OK", mime_type, fileContent->data, fileContent->size);
+		file_free(fileContent);
+	}
 }
 
 /**
@@ -130,11 +186,47 @@ void get_file(int fd, struct cache *cache, char *request_path)
  * "Newlines" in HTTP can be \r\n (carriage return followed by newline) or \n
  * (newline) or \r (carriage return).
  */
-char *find_start_of_body(char *header)
-{
-    ///////////////////
-    // IMPLEMENT ME! // (Stretch)
-    ///////////////////
+char *find_start_of_body(char *header, int bytes_recv)
+{ //just skip the first four lines of request
+    int newLineCnt = 0;
+	char* endOfHeader;
+	
+	endOfHeader = strstr(header, "\r\n\r\n");
+	return (endOfHeader==NULL)?NULL:(endOfHeader+4);
+}
+
+int save_file(char* endPoint, char* fileContent, int fileSize){
+	printf("save_file called\n");
+	struct file_data *newFile;
+	newFile = (struct file_data*)malloc(sizeof(struct file_data));
+	newFile->data = (void*)malloc(fileSize);
+	printf("newFile allocated!\n");
+	printf("\n\nendPoint: %s\n\n",endPoint);
+	newFile->size = fileSize;
+	printf("strlen(fileContent): %d   fileSize: %d\n",strlen(fileContent), fileSize);
+	memcpy(newFile->data, fileContent, fileSize);
+	
+	
+	file_write(endPoint, newFile);
+}
+
+void post_save(int fd, char* savePath, char* request, int bytes_recvd){
+	printf("request type is POST!\n");
+	printf("request: %s\n",request);
+	char* startOfBody = find_start_of_body(request, bytes_recvd);
+	int fileSize = bytes_recvd - (startOfBody-request);
+	printf("startOfBody: %s\n",startOfBody);
+	printf("fileSize: %d\n",fileSize);
+	printf("savePath: %s\n",savePath);
+	save_file(savePath, startOfBody, fileSize);
+
+	//send response. application/json {"status":"ok"}
+	char returnStatus[] = "{\"status\":\"ok\"}\n";
+	char content_type[] = "application/json";
+	printf("content_type: %s\n",content_type);
+	printf("return Status: %s\n",returnStatus);
+	printf("return len: %d\n",strlen(returnStatus));
+	send_response(fd, "HTTP/1.1 200 OK", content_type, returnStatus, strlen(returnStatus));
 }
 
 /**
@@ -147,16 +239,13 @@ void handle_http_request(int fd, struct cache *cache)
 
     // Read request
     int bytes_recvd = recv(fd, request, request_buffer_size - 1, 0);
-
+	printf("bytes_recvd: %d\n",bytes_recvd);
+	printf("request:   %s\n",request);
+	
     if (bytes_recvd < 0) {
         perror("recv");
         return;
     }
-
-
-    ///////////////////
-    // IMPLEMENT ME! //
-    ///////////////////
 
     // Read the first two components of the first line of the request 
  
@@ -164,8 +253,56 @@ void handle_http_request(int fd, struct cache *cache)
 
     //    Check if it's /d20 and handle that special case
     //    Otherwise serve the requested file by calling get_file()
-
-
+	int readCnt=0;
+	
+	char requestType[10] = "", endPoint[1000] = "", version[10] = "";
+	
+	sscanf(request, " %s %s ", requestType, endPoint);
+	puts(requestType);
+	puts(endPoint);
+	//printf("requestType:   %s", requestType);
+	printf("endPoint:   %s\n", endPoint);
+	if(strncmp(requestType, "GET", strlen("GET"))==0){
+		printf("request type is GET!\n");
+		if(strlen(endPoint)==strlen("/d20")&&strncmp(endPoint, "/d20", strlen("/d20"))==0){
+			printf("endPoint is /d20!\n");
+			get_d20(fd);
+		}
+		if(strlen(endPoint)==strlen("/")&&strncmp(endPoint, "/", strlen("/")==0)){
+			get_file(fd, cache, "/index.html");
+		}
+		else{
+			get_file(fd, cache, endPoint);
+		}
+	}
+	else if(strncmp(requestType, "POST", strlen("POST"))==0){
+		printf("request type is POST!\n");
+		/* if(strstr(endPoint, "/save/")==endPoint){ //if endPoint starts with "/save/"
+			char* savePath = (char*)malloc(strlen("./serverroot/")+strlen(endPoint)-strlen("/save/"));
+			strncpy(savePath, "./serverroot/", strlen("./serverroot/"));
+			strcat(savePath,(strstr(endPoint, "/save/")+strlen("/save/")));
+			printf("savePath: %s\n",savePath);
+			post_save(fd, savePath, request, bytes_recvd);
+			free(savePath);
+		}*/
+		char savePath[100] = "";
+		// char* savePath = (char*)malloc(strlen("./serverroot")+strlen(endPoint));
+		printf("savePath len: %d\n",strlen(savePath));
+		for(int i=0;i<strlen(savePath);i++){
+			savePath[i] = 0;
+		}
+		strncpy(savePath, "./serverroot", strlen("./serverroot"));
+		for(int i=0;i<strlen(savePath);i++){
+			printf("%c",savePath[i]);
+		}
+		printf("\n");
+		printf("savePath: %s\n",savePath);
+		strncpy(savePath+strlen("./serverroot"), endPoint, strlen(endPoint));
+		printf("endPoint: %s\n",endPoint);
+		printf("savePath: %s\n",savePath);
+		post_save(fd, savePath, request, bytes_recvd);
+	}
+	
     // (Stretch) If POST, handle the post request
 }
 
@@ -178,7 +315,7 @@ int main(void)
     struct sockaddr_storage their_addr; // connector's address information
     char s[INET6_ADDRSTRLEN];
 
-    struct cache *cache = cache_create(10, 0);
+    struct cache *cache = cache_create(10, 1);
 
     // Get a listening socket
     int listenfd = get_listener_socket(PORT);
@@ -215,6 +352,7 @@ int main(void)
         // listenfd is still listening for new connections.
 
         handle_http_request(newfd, cache);
+		printf("done!");
 
         close(newfd);
     }
@@ -223,4 +361,3 @@ int main(void)
 
     return 0;
 }
-
