@@ -33,6 +33,7 @@
 #include "file.h"
 #include "mime.h"
 #include "cache.h"
+#include "directory.h"
 
 #define PORT "3490"  // the port users will be connecting to
 
@@ -67,21 +68,21 @@ int send_response(int fd, char *header, char *content_type, void *body, int cont
 		"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
 	};
 	int wday, month, day, hour, min, sec, year;
-	wday = timeFormat->tm_wday; printf("wday: %d\n",wday);
-	month = timeFormat->tm_mon; printf("month: %d\n",month);
-	day = timeFormat->tm_mday; printf("day %d ",day);
-	hour = timeFormat->tm_hour; printf("hour %d ",hour);
-	min = timeFormat->tm_min; printf("min %d ",min);
-	sec = timeFormat->tm_sec;printf("sec: %d",sec);
+	wday = timeFormat->tm_wday; 
+	month = timeFormat->tm_mon; 
+	day = timeFormat->tm_mday; 
+	hour = timeFormat->tm_hour; 
+	min = timeFormat->tm_min; 
+	sec = timeFormat->tm_sec;
 	year = 1900+timeFormat->tm_year;
 	
 	
     // Build HTTP response and store it in response
 	int charCnt=0;
-	charCnt += sprintf(response, "%s\n",header);printf("header: %s\n",response);
-	charCnt += sprintf(response+charCnt, "Date: %s %s %d %d:%d:%d PST %d\n", dayOfWeek[wday], monthName[month], day, hour, min, sec, year);printf("header: %s\n",response);
-	charCnt += sprintf(response+charCnt, "Connection: close\n");printf("header: %s\n",response);
-	charCnt += sprintf(response+charCnt, "Content-Length: %d\n",content_length);printf("header: %s\n",response);
+	charCnt += sprintf(response, "%s\n",header);
+	charCnt += sprintf(response+charCnt, "Date: %s %s %d %d:%d:%d PST %d\n", dayOfWeek[wday], monthName[month], day, hour, min, sec, year);
+	charCnt += sprintf(response+charCnt, "Connection: close\n");
+	charCnt += sprintf(response+charCnt, "Content-Length: %d\n",content_length);
 	charCnt += sprintf(response+charCnt, "Content-Type: %s\n\n", content_type);
 	memcpy(response+charCnt, body, content_length);
 	
@@ -151,18 +152,21 @@ void get_file(int fd, struct cache *cache, char *request_path)
 	char filePath[1020];
 	struct file_data *fileContent;
 	char* mime_type;
-	sprintf(filePath, "%s%s",SERVER_ROOT, request_path);
+	strncpy(filePath, request_path, 1020);
 	printf("filePath:  %s \n",filePath);
 	
 	struct cache_entry *entry = cache_get(cache, request_path);
 	if(entry!=NULL){
 		time_t current = time(NULL);
-		printf("created_at: %d     current: %d  difference: %d\n",entry->created_at, current, (current-entry->created_at));
 		if(current - entry->created_at < TIME_DIFF){
 			printf("file found from entry. Serving from cache\n");
 			send_response(fd, "HTTP/1.1 200 OK", entry->content_type, entry->content, entry->content_length);
+			print_cache(cache);
 			return;
 		}
+		else{
+			cache_delete(cache, entry);
+		}	
 	}
 	
 	fileContent = file_load(filePath);
@@ -178,6 +182,13 @@ void get_file(int fd, struct cache *cache, char *request_path)
 		send_response(fd, "HTTP/1.1 200 OK", mime_type, fileContent->data, fileContent->size);
 		file_free(fileContent);
 	}
+	print_cache(cache);
+}
+
+void serve_directory(int fd, char *request_path){
+	char index_page[8192] = "";
+	drawindexpage(request_path, index_page);
+	send_response(fd, "HTTP/1.1 200 OK", "text/html", index_page, strlen(index_page));
 }
 
 /**
@@ -229,6 +240,33 @@ void post_save(int fd, char* savePath, char* request, int bytes_recvd){
 	send_response(fd, "HTTP/1.1 200 OK", content_type, returnStatus, strlen(returnStatus));
 }
 
+void handle_get(int fd, char* endPoint, struct cache *cache){
+	printf("_____\n");
+	printf("handle_get(%s) %d   %d\n",endPoint, strlen(endPoint), strlen("/"));
+	printf("_____\n");
+	if((strlen(endPoint)==strlen("/d20"))&&(strncmp(endPoint, "/d20", strlen(endPoint))==0)){
+		printf("endPoint is /d20!\n");
+		get_d20(fd);
+	}
+	else if(strlen(endPoint)==strlen("/")){
+		printf("serving index page!\n");
+		char filePath[1100] = "";
+		sprintf(filePath, "%s%s",SERVER_ROOT, "/index.html");
+		printf("filePath: %s\n",filePath);
+		get_file(fd, cache, filePath);
+	}
+	else{
+		char filePath[1100] = "";
+		sprintf(filePath, "%s%s",SERVER_ROOT, endPoint);
+		if(isdirectory(filePath)){
+			serve_directory(fd, filePath);
+		}
+		else{
+			get_file(fd, cache, filePath);
+		}
+	}
+}
+
 /**
  * Handle HTTP request and send response
  */
@@ -264,16 +302,7 @@ void handle_http_request(int fd, struct cache *cache)
 	printf("endPoint:   %s\n", endPoint);
 	if(strncmp(requestType, "GET", strlen("GET"))==0){
 		printf("request type is GET!\n");
-		if(strlen(endPoint)==strlen("/d20")&&strncmp(endPoint, "/d20", strlen("/d20"))==0){
-			printf("endPoint is /d20!\n");
-			get_d20(fd);
-		}
-		if(strlen(endPoint)==strlen("/")&&strncmp(endPoint, "/", strlen("/")==0)){
-			get_file(fd, cache, "/index.html");
-		}
-		else{
-			get_file(fd, cache, endPoint);
-		}
+		handle_get(fd, endPoint, cache);
 	}
 	else if(strncmp(requestType, "POST", strlen("POST"))==0){
 		printf("request type is POST!\n");
@@ -302,8 +331,6 @@ void handle_http_request(int fd, struct cache *cache)
 		printf("savePath: %s\n",savePath);
 		post_save(fd, savePath, request, bytes_recvd);
 	}
-	
-    // (Stretch) If POST, handle the post request
 }
 
 /**

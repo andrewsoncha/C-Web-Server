@@ -72,7 +72,26 @@ void dllist_move_to_head(struct cache *cache, struct cache_entry *ce)
     }
 }
 
-
+/**
+ * Move a cache entry to the tail of the list
+ */
+void dllist_move_to_tail(struct cache *cache, struct cache_entry *ce){
+	if(ce!=cache->tail){
+		if(ce == cache->head){
+			cache->head = ce->next;
+			cache->head->prev = NULL;
+		}
+		else{
+			ce->prev->next = ce->next;
+			ce->next->prev = ce->prev;
+		}
+		
+		ce->prev = cache->tail;
+		cache->tail->next = ce;
+		ce->next = NULL;
+		cache->tail = ce;
+	}
+}
 /**
  * Removes the tail from the list and returns it
  * 
@@ -107,6 +126,12 @@ struct cache *cache_create(int max_size, int hashsize)
 	return newCache;
 }
 
+void cache_delete(struct cache *cache, struct cache_entry *ce){
+	dllist_move_to_tail(cache, ce);
+	dllist_remove_tail(cache);
+	free_entry(ce);
+}
+
 void cache_free(struct cache *cache)
 {
     struct cache_entry *cur_entry = cache->head;
@@ -134,8 +159,15 @@ void cache_free(struct cache *cache)
 void cache_put(struct cache *cache, char *path, char *content_type, void *content, int content_length)
 {
     struct cache_entry *entry;
+	
+	printf("\n\n\n");
+	if(cache->head!=NULL){
+		printf("cache->head: %s   cache->tail: %s   ",cache->head->path, cache->tail->path);
+	}
+	printf("new Entry: %s\n\n\n", path);
 	entry = hashtable_get(cache->index, path);
 	if(entry==NULL){ // if the entry is not within the cache
+		printf("entry not within the cache\n");
 		entry = alloc_entry(path, content_type, content, content_length);
 		dllist_insert_head(cache, entry);
 		hashtable_put(cache->index, path, entry);
@@ -147,6 +179,7 @@ void cache_put(struct cache *cache, char *path, char *content_type, void *conten
 		}
 	}
 	else{
+		printf("entry within the cache\n");
 		dllist_move_to_head(cache, entry);
 	}
 }
@@ -159,9 +192,36 @@ struct cache_entry *cache_get(struct cache *cache, char *path)
     struct cache_entry *entry;
 	entry = hashtable_get(cache->index, path);
 	if(entry==NULL){
+		printf("\n\n\n entry is NULL!!!\n\n\n");
 		return NULL;
 	}
 	
 	dllist_move_to_head(cache, entry);
 	return entry;
+}
+
+/*
+Prints the contents of the cache
+*/
+void print_cache(struct cache *cache){
+	struct cache_entry *entry;
+	int i=1;
+	printf("CACHE_PRINT\n");
+	printf("________________________________________________________________________\n");
+	entry = cache->head;
+	do{
+		struct tm* timeFormat = localtime(&(entry->created_at));
+		int month, day, hour, min, sec, year;
+		month = timeFormat->tm_mon+1;
+		day = timeFormat->tm_mday;
+		hour = timeFormat->tm_hour; 
+		min = timeFormat->tm_min;
+		sec = timeFormat->tm_sec;
+		year = 1900+timeFormat->tm_year;
+		printf("Entry #%d   Path: %s    Created At: %d-%d-%d  %02d:%02d:%02d\n", i, entry->path, year, month, day, hour, min, sec);
+		entry = entry->next;
+		i++;
+	}while(entry!=NULL);
+	printf("________________________________________________________________________\n");
+	printf("head: %s  tail: %s  size:%d\n",cache->head->path, cache->tail->path, cache->cur_size);
 }

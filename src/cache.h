@@ -24,8 +24,10 @@ struct cache {
 extern struct cache_entry *alloc_entry(char *path, char *content_type, void *content, int content_length);
 extern void free_entry(struct cache_entry *entry);
 extern struct cache *cache_create(int max_size, int hashsize);
+extern void cache_delete(struct cache *cache, struct cache_entry *ce);
 extern void cache_free(struct cache *cache);
 extern void cache_put(struct cache *cache, char *path, char *content_type, void *content, int content_length);
 extern struct cache_entry *cache_get(struct cache *cache, char *path);
+extern void print_cache(struct cache *cache);
 
 #endif
