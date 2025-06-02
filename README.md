@@ -1,8 +1,16 @@
 # A Simple Web Server in C
 
-Implemented so Far: All the functionality of the original Repo(GET, chaching), POST, automatic index caching, cache expiration
-Additional Functionality(Added by me!): Directory Saving(Creating directories with POST), Directory Listing
-ToDo: Fix Caching Bug(When a new cache entry is added, the key of all cache entries changes to that key), Multithreading
+Implemented so Far: 
+* All the functionality of the original Repo(GET, chaching)
+* POST
+* Automatic index page serving
+* Cache expiration
+Additional Functionality(Added by me!):
+* Directory Saving(Creating directories with POST)
+* Directory Listing
+ToDo:
+* Fix Caching Bug(When a new cache entry is added, the key of all cache entries changes to that key)
+* Multithreading
 
 
 In this project, we'll finish the implementation of a web server in C.
