@@ -11,10 +11,10 @@ Additional Functionality(Added by me!):
 
 * Directory Saving(Creating directories with POST)
 * Directory Listing
+* Directory Listing Caching
   
 ToDo:
 
-* Fix Caching Bug(When a new cache entry is added, the key of all cache entries changes to that key)
 * Multithreading
 
 
