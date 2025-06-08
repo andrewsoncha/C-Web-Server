@@ -185,10 +185,31 @@ void get_file(int fd, struct cache *cache, char *request_path)
 	print_cache(cache);
 }
 
-void serve_directory(int fd, char *request_path){
+void serve_directory(int fd, struct cache* cache, char *request_path){
+	struct cache_entry *entry = cache_get(cache, request_path);
+	if(entry!=NULL){
+		time_t current = time(NULL);
+		if(current - entry->created_at < TIME_DIFF){
+			printf("directory found from entry. Serving from cache\n");
+			send_response(fd, "HTTP/1.1 200 OK", entry->content_type, entry->content, entry->content_length);
+			print_cache(cache);
+			return;
+		}
+		else{
+			cache_delete(cache, entry);
+		}	
+	}
+	
 	char index_page[8192] = "";
+	printf("directory not found from entry. Drawing new Index page\n");
+	
 	drawindexpage(request_path, index_page);
-	send_response(fd, "HTTP/1.1 200 OK", "text/html", index_page, strlen(index_page));
+	int indexLen = strlen(index_page);
+	
+	cache_put(cache, request_path, "text/html", index_page, indexLen);
+	send_response(fd, "HTTP/1.1 200 OK", "text/html", index_page, indexLen);
+	
+	print_cache(cache);
 }
 
 /**
@@ -259,7 +280,7 @@ void handle_get(int fd, char* endPoint, struct cache *cache){
 		char filePath[1100] = "";
 		sprintf(filePath, "%s%s",SERVER_ROOT, endPoint);
 		if(isdirectory(filePath)){
-			serve_directory(fd, filePath);
+			serve_directory(fd, cache, filePath);
 		}
 		else{
 			get_file(fd, cache, filePath);

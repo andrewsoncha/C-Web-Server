@@ -2,6 +2,9 @@
 #define _WEBCACHE_H_
 #include<time.h>
 
+#define MX_PATH_LEN 1020
+#define MX_TYPE_LEN 100
+
 // Individual hash table entry
 struct cache_entry {
     char *path;   // Endpoint path--key to the cache
