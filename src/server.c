@@ -29,6 +29,8 @@
 #include <time.h>
 #include <sys/file.h>
 #include <fcntl.h>
+#include <pthread.h>
+
 #include "net.h"
 #include "file.h"
 #include "mime.h"
@@ -36,10 +38,21 @@
 #include "directory.h"
 
 #define PORT "3490"  // the port users will be connecting to
+#define MX_CLIENTS 256
 
 #define SERVER_FILES "./serverfiles"
 #define SERVER_ROOT "./serverroot"
 #define TIME_DIFF 60
+
+struct pthread_args {
+	int fd;
+	struct cache *cache;
+};
+
+int clnt_socks[MX_CLIENTS];
+int clnt_cnt=0;
+
+pthread_mutex_t mutx;
 
 /**
  * Send an HTTP response
@@ -132,16 +145,19 @@ void resp_404(int fd)
     filedata = file_load(filepath);
 
     if (filedata == NULL) {
-        // TODO: make this non-fatal
         fprintf(stderr, "cannot find system 404 file\n");
         exit(3);
     }
 
     mime_type = mime_type_get(filepath);
+	printf("Serving 404!\n");
+	printf("404 file: %s\n",filedata->data);
 
     send_response(fd, "HTTP/1.1 404 NOT FOUND", mime_type, filedata->data, filedata->size);
+	printf("response sent!\n");
 
     file_free(filedata);
+	printf("filedata freed!\n");
 }
 
 /**
@@ -152,21 +168,31 @@ void get_file(int fd, struct cache *cache, char *request_path)
 	char filePath[1020];
 	struct file_data *fileContent;
 	char* mime_type;
+	int foundInCache = 0;
 	strncpy(filePath, request_path, 1020);
 	printf("filePath:  %s \n",filePath);
 	
+	pthread_mutex_lock(&mutx);
 	struct cache_entry *entry = cache_get(cache, request_path);
 	if(entry!=NULL){
 		time_t current = time(NULL);
 		if(current - entry->created_at < TIME_DIFF){
 			printf("file found from entry. Serving from cache\n");
-			send_response(fd, "HTTP/1.1 200 OK", entry->content_type, entry->content, entry->content_length);
+			
 			print_cache(cache);
-			return;
+			foundInCache = 1;
 		}
 		else{
 			cache_delete(cache, entry);
 		}	
+		if(foundInCache==1){
+			send_response(fd, "HTTP/1.1 200 OK", entry->content_type, entry->content, entry->content_length);
+		}
+	}
+	pthread_mutex_unlock(&mutx);
+	
+	if(foundInCache==1){
+		return;
 	}
 	
 	fileContent = file_load(filePath);
@@ -178,26 +204,40 @@ void get_file(int fd, struct cache *cache, char *request_path)
 		printf("file not found from entry. serving from disk\n");
 		printf("FILE FOUND. SERVING 200\n");
 		mime_type = mime_type_get(filePath);
+		printf("mime type got! %s\n",mime_type);
+		pthread_mutex_lock(&mutx);
+		printf("mutex locked!\n");
 		cache_put(cache, request_path, mime_type, fileContent->data, fileContent->size);
+		print_cache(cache);
+		pthread_mutex_unlock(&mutx);
+		printf("mutex unlocked!\n");
 		send_response(fd, "HTTP/1.1 200 OK", mime_type, fileContent->data, fileContent->size);
 		file_free(fileContent);
 	}
-	print_cache(cache);
 }
 
-void serve_directory(int fd, struct cache* cache, char *request_path){
+void get_directory(int fd, struct cache* cache, char *request_path){
+	int foundInCache = 0;
+	pthread_mutex_lock(&mutx);
 	struct cache_entry *entry = cache_get(cache, request_path);
 	if(entry!=NULL){
 		time_t current = time(NULL);
 		if(current - entry->created_at < TIME_DIFF){
 			printf("directory found from entry. Serving from cache\n");
-			send_response(fd, "HTTP/1.1 200 OK", entry->content_type, entry->content, entry->content_length);
 			print_cache(cache);
+			foundInCache = 1;
 			return;
 		}
 		else{
 			cache_delete(cache, entry);
 		}	
+		if(foundInCache==1){
+			send_response(fd, "HTTP/1.1 200 OK", entry->content_type, entry->content, entry->content_length);
+		}
+	}
+	pthread_mutex_unlock(&mutx);
+	if(foundInCache==1){
+		return;
 	}
 	
 	char index_page[8192] = "";
@@ -206,7 +246,9 @@ void serve_directory(int fd, struct cache* cache, char *request_path){
 	drawindexpage(request_path, index_page);
 	int indexLen = strlen(index_page);
 	
+	pthread_mutex_lock(&mutx);
 	cache_put(cache, request_path, "text/html", index_page, indexLen);
+	pthread_mutex_unlock(&mutx);
 	send_response(fd, "HTTP/1.1 200 OK", "text/html", index_page, indexLen);
 	
 	print_cache(cache);
@@ -237,7 +279,6 @@ int save_file(char* endPoint, char* fileContent, int fileSize){
 	newFile->size = fileSize;
 	printf("strlen(fileContent): %d   fileSize: %d\n",strlen(fileContent), fileSize);
 	memcpy(newFile->data, fileContent, fileSize);
-	
 	
 	file_write(endPoint, newFile);
 }
@@ -279,10 +320,11 @@ void handle_get(int fd, char* endPoint, struct cache *cache){
 	else{
 		char filePath[1100] = "";
 		sprintf(filePath, "%s%s",SERVER_ROOT, endPoint);
-		if(isdirectory(filePath)){
-			serve_directory(fd, cache, filePath);
+		printf("is directory: %d\n",isdirectory(filePath));
+		if(isdirectory(filePath)==1){ //when filePath is a directory
+			get_directory(fd, cache, filePath);
 		}
-		else{
+		else{ //either when filePath is a file(isdirectory==0) or when file or directory does not exist(isdirectory==-1)
 			get_file(fd, cache, filePath);
 		}
 	}
@@ -291,8 +333,11 @@ void handle_get(int fd, char* endPoint, struct cache *cache){
 /**
  * Handle HTTP request and send response
  */
-void handle_http_request(int fd, struct cache *cache)
+void handle_http_request(struct pthread_args *args)
 {
+	int fd = args->fd;
+	struct cache *cache = args->cache;
+	
     const int request_buffer_size = 65536; // 64K
     char request[request_buffer_size];
 
@@ -352,6 +397,22 @@ void handle_http_request(int fd, struct cache *cache)
 		printf("savePath: %s\n",savePath);
 		post_save(fd, savePath, request, bytes_recvd);
 	}
+	
+	//close socket and remove thread from clnt_threads
+	printf("closing socket %d!\n",fd);
+	close(fd);
+	
+	pthread_mutex_lock(&mutx);
+	for(int i=0;i<clnt_cnt;i++){
+		if(fd==clnt_socks[i]){
+			while(i++<clnt_cnt-1){ //pull sockets to the front by 1
+				clnt_socks[i] = clnt_socks[i+1];
+			}
+			break;
+		}
+	}
+	clnt_cnt--;
+	pthread_mutex_unlock(&mutx);
 }
 
 /**
@@ -365,6 +426,9 @@ int main(void)
 
     struct cache *cache = cache_create(10, 1);
 
+	pthread_mutex_init(&mutx, NULL);
+		
+	
     // Get a listening socket
     int listenfd = get_listener_socket(PORT);
 
@@ -398,14 +462,25 @@ int main(void)
         
         // newfd is a new socket descriptor for the new connection.
         // listenfd is still listening for new connections.
+		
+		if(clnt_cnt < MX_CLIENTS){
+			pthread_mutex_lock(&mutx);
+			clnt_socks[clnt_cnt++] = newfd;
+			pthread_mutex_unlock(&mutx);
+			
+			struct pthread_args args;
+			args.fd = newfd;
+			args.cache = cache;
 
-        handle_http_request(newfd, cache);
-		printf("done!");
+			pthread_t t_id;
+			pthread_create(&t_id, NULL, handle_http_request, (void*)&args);
+			pthread_detach(t_id);
+		}
 
-        close(newfd);
     }
+	pthread_mutex_destroy(&mutx);
 
-    // Unreachable code
+    // Unreachable code(hopefully)
 
     return 0;
 }
